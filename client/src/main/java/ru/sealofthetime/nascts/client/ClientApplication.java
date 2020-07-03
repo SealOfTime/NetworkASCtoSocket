@@ -5,12 +5,16 @@ package ru.sealofthetime.nascts.client;
 
 import ru.sealofthetime.nascts.shared.Response;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
-import java.util.HashMap;
-import java.util.Scanner;
+import java.util.*;
+import java.util.function.Function;
 
 public class ClientApplication {
     public static void main(String[] args) {
@@ -43,23 +47,106 @@ public class ClientApplication {
     }
 
     static class ClientReaderHandler implements CompletionHandler<Integer, HashMap<String, Object>>{
+        enum State{
+            HEADER, CONTENT, NOTCONNECTED
+        }
+
+        State state = State.HEADER;
+        private byte[] packet;
+
+        /*TODO: possibly unsafe, move everything in Attachment of CompletionHandler::completed, not sure though,
+         * requires further investigation*/
+        private int messageSize;
+        ByteArrayOutputStream message = new ByteArrayOutputStream();
+        public <T> Optional<T> incrementRead(int size, ByteBuffer dataPiece, Function<byte[], T> constructor) throws IOException{
+            int remaining = size - message.size();
+            int available = dataPiece.remaining();
+
+            if(available > remaining)
+                packet = new byte[remaining];
+            else
+                packet = new byte[available];
+
+            dataPiece.get(packet);
+            message.write(packet);
+
+            System.out.println(message.size());
+            if(message.size() == size) {
+                for (byte b : message.toByteArray()) System.out.print(b + " ");
+                System.out.println();
+                var result = Optional.of(constructor.apply(message.toByteArray()));
+                message.reset();
+                return result;
+            }
+            return Optional.empty();
+        }
 
 		@Override
 		public void completed(Integer result, HashMap<String, Object> att) {
             System.out.println("Read " + result + " bytes. ");
-            var buf = ((ByteBuffer)att.get("buffer")).flip();
-            var asc = (AsynchronousSocketChannel)att.get("source");
-            System.out.println(buf.getInt());
+            var buf = ((ByteBuffer) att.get("buffer")).flip();
+            var asc = (AsynchronousSocketChannel) att.get("source");
+            try {
+                while(buf.hasRemaining()) {
+                    if (this.state == State.HEADER) {
+                        var size = this.incrementRead(4, buf, ClientReaderHandler::byteArrayToInt);
 
-            for(byte b : buf.array()) System.out.print(b + " ");
-            System.out.println();
+                        for (byte b : packet) System.out.print(b + " ");
+                        System.out.println();
 
-            asc.read(buf, att, this);
+                        if(size.isPresent()) {
+                            this.messageSize = size.get();
+                            this.state = State.CONTENT;
+                            System.out.println("Starting read of message of length: " + this.messageSize);
+                        }
+                    }
+                    if (this.state == State.CONTENT) {
+                        var content = this.incrementRead(this.messageSize, buf, ClientReaderHandler::byteArrayToObject);
+
+                        for (byte b : packet) System.out.print(b + " ");
+                        System.out.println();
+
+                        if (content.isPresent()) {
+                            this.state = State.HEADER;
+                            for (byte b : message.toByteArray()) System.out.print(b + " ");
+                            System.out.println("Content of response is: " + ((Response)content.get()).content);
+                        }
+                    }
+                }
+//                System.out.println(result);
+            }
+            catch(IOException io){
+                io.printStackTrace();
+            }
+//            catch(ClassNotFoundException cnfe){
+//                cnfe.printStackTrace();
+//            }
+            finally {
+                asc.read(buf.clear(), att, this);
+            }
 		}
 
-		@Override
+        @Override
 		public void failed(Throwable exc, HashMap<String, Object> attachment) {
 			exc.printStackTrace();
+        }
+
+        //TODO: move somewhere
+        private static int byteArrayToInt(byte[] encodedValue) {
+            return ((encodedValue[0] << 24) +
+                    (encodedValue[1] << 16) +
+                    (encodedValue[2] << 8) +
+                    (encodedValue[3] << 0));
+        }
+        private static Object byteArrayToObject(byte[] bytes) {
+            try {
+                ByteArrayInputStream bais = new ByteArrayInputStream(bytes);
+                ObjectInputStream ois = new ObjectInputStream(bais);
+                return ois.readObject();
+            }catch(Exception e){
+                e.printStackTrace();
+                return new Response(0, "error");//TODO: return with UnsafeFunction
+            }
         }
     }
 }

@@ -3,14 +3,14 @@
  */
 package ru.sealofthetime.nascts.server;
 
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Arrays;
 import java.util.Scanner;
 
 import ru.sealofthetime.nascts.shared.Request;
+import ru.sealofthetime.nascts.shared.Response;
 
 public class ServerApplication {
     public String getGreeting() {
@@ -27,12 +27,18 @@ public class ServerApplication {
             Scanner sc = new Scanner(System.in);
             System.out.println("Starting to accept user input");
             while(sc.hasNext()){
-                var res = sc.nextInt();
-                ObjectOutputStream out = new ObjectOutputStream(client.getOutputStream());
+                var res = sc.next();
+                var bytes = new ByteArrayOutputStream();
+                ObjectOutputStream out = new ObjectOutputStream(bytes);
                 System.out.println("Sending " + res);
-                out.write(res);
+                out.writeObject(new Response(5, res));
                 out.flush();
-
+                byte[] obj = bytes.toByteArray();
+                for (byte b : obj) System.out.print(b + " ");
+                System.out.println("Length: " + obj.length);
+                var os = new DataOutputStream(client.getOutputStream());
+                os.writeInt(obj.length);
+                os.write(obj);
             }
             ObjectInputStream in = new ObjectInputStream(client.getInputStream());
             Request req = (Request) in.readObject();
